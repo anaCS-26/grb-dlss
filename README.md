@@ -21,7 +21,7 @@ The game only ships temporal AA ("Temporal Injection"). This mod replaces that T
 
 ## Install
 
-1. Download `dinput8.dll` and `GRB_DLSS.ini` from [Releases](../../releases), or build them yourself (see below).
+1. Download [`bin/dinput8.dll`](bin/dinput8.dll) and [`bin/GRB_DLSS.ini`](bin/GRB_DLSS.ini) (prebuilt), or build them yourself (see below).
 2. Copy both into the game folder, next to `GRB.exe`.
 3. Optional: put a recent `nvngx_dlss.dll` (310.x or newer) in the game folder for the newer presets (J–M), or use the NVIDIA app's DLSS override.
 4. Start the game, set Anti-Aliasing to TAA, and press **Home** for the menu.
