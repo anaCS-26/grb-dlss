@@ -906,23 +906,35 @@ static void OnPresent(IDXGISwapChain* sc)
 typedef HRESULT(STDMETHODCALLTYPE* PFN_Present)(IDXGISwapChain*, UINT, UINT);
 typedef HRESULT(STDMETHODCALLTYPE* PFN_Present1)(IDXGISwapChain1*, UINT, UINT, const DXGI_PRESENT_PARAMETERS*);
 static volatile LONG s_inPresent;
+bool PacingPresentBegin();
+void PacingPresentEnd(bool outer, uint64_t t0, uint64_t t1);
 static HRESULT STDMETHODCALLTYPE Hk_Present(IDXGISwapChain* sc, UINT sync, UINT flags)
 {
     PFN_Present o = (PFN_Present)OrigFor(sc, 8);
+    bool test = (flags & DXGI_PRESENT_TEST) != 0;
+    bool outer = !test && PacingPresentBegin();
+    uint64_t t0 = NowQpc();
     // only the outermost Present of a frame draws (wrappers call into the real swap chain)
-    if (InterlockedIncrement(&s_inPresent) == 1 && !(flags & DXGI_PRESENT_TEST))
+    if (InterlockedIncrement(&s_inPresent) == 1 && !test)
         OnPresent(sc);
     HRESULT hr = o(sc, sync, flags);
     InterlockedDecrement(&s_inPresent);
+    if (!test)
+        PacingPresentEnd(outer, t0, NowQpc());
     return hr;
 }
 static HRESULT STDMETHODCALLTYPE Hk_Present1(IDXGISwapChain1* sc, UINT sync, UINT flags, const DXGI_PRESENT_PARAMETERS* pp)
 {
     PFN_Present1 o = (PFN_Present1)OrigFor(sc, 22);
-    if (InterlockedIncrement(&s_inPresent) == 1 && !(flags & DXGI_PRESENT_TEST))
+    bool test = (flags & DXGI_PRESENT_TEST) != 0;
+    bool outer = !test && PacingPresentBegin();
+    uint64_t t0 = NowQpc();
+    if (InterlockedIncrement(&s_inPresent) == 1 && !test)
         OnPresent(sc);
     HRESULT hr = o(sc, sync, flags, pp);
     InterlockedDecrement(&s_inPresent);
+    if (!test)
+        PacingPresentEnd(outer, t0, NowQpc());
     return hr;
 }
 

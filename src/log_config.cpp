@@ -193,4 +193,5 @@ void LoadConfig()
     g_cfg.maskFeatureLevel = ReadInt(ini, L"Compat", L"ReportRequestedFeatureLevel", 1);
     g_cfg.fgCameraData = ReadInt(ini, L"Compat", L"FGCameraData", 1);
     g_cfg.devCommands = ReadInt(ini, L"Log", L"DevCommands", 0);
+    g_cfg.pacingLog = ReadInt(ini, L"Log", L"PacingLog", 0);
 }
