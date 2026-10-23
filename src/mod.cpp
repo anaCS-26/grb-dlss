@@ -2286,6 +2286,11 @@ static bool PatchSlot(void** vt, int idx, void* hook, void** orig)
 {
     if (vt[idx] == hook)
         return true;
+    // Already hooked by us, and another layer (OptiScaler, an overlay, the driver) has since put its own
+    // hook in front of ours: that hook calls ours, so leave it. Re-patching would save their hook as our
+    // "original" and the two hooks would call each other forever (stack overflow at startup).
+    if (*orig && vt[idx] != *orig)
+        return true;
     DWORD old;
     if (!VirtualProtect(&vt[idx], sizeof(void*), PAGE_READWRITE, &old))
     {

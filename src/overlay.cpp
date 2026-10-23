@@ -57,7 +57,8 @@ static bool HookSlot(void* obj, int idx, void* hook)
         s_vtCount++;
     }
     bool ok = true;
-    if (vt[idx] != hook)
+    // see PatchSlot in mod.cpp: never re-hook a slot another layer has hooked on top of us
+    if (vt[idx] != hook && !(r->orig[idx] && vt[idx] != r->orig[idx]))
     {
         DWORD old;
         if (VirtualProtect(&vt[idx], sizeof(void*), PAGE_READWRITE, &old) ||
