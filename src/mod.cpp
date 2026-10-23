@@ -1781,10 +1781,8 @@ void ModOnPresentEvent()
         LOGI("EvalTrace %8.2f ms  PRESENT #%I64d (thread %lu)", QpcToMs(NowQpc() - s_traceT0), g_presentCount, GetCurrentThreadId());
     }
 }
-void PacingOnEval();
 static void NoteEval(LONG64 taaIndex)
 {
-    PacingOnEval();
     LONG64 pc = g_presentCount;
     if (pc == s_lastEvalPresent)
     {

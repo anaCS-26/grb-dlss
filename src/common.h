@@ -61,7 +61,6 @@ struct Config
     int debugView;        // 0 off, 1 motion vectors, 2 depth
     int hookDelayMs;
     int devCommands;
-    int pacingLog;
     int presetKey;
     int maskFeatureLevel;
     float renderScale;    // 0 = game decides (Temporal Injection = 0.667), else fraction of the output resolution
