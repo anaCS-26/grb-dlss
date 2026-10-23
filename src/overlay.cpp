@@ -30,7 +30,16 @@ static void* OrigFor(void* obj, int idx)
     void** vt = *(void***)obj;
     LONG n = s_vtCount;
     for (LONG i = 0; i < n; i++)
-        if (s_vts[i].vt == vt)
+        if (s_vts[i].vt == vt && s_vts[i].orig[idx])
+            return s_vts[i].orig[idx];
+    // Called through a vtable we did not patch: another layer copied a vtable after we had hooked it
+    // (OptiScaler / driver wrappers do). The original is then the one we saved for the vtable it was
+    // copied from - use the most recent original we have for this slot instead of calling null.
+    static volatile LONG s_warned;
+    if (InterlockedIncrement(&s_warned) <= 5)
+        LOGI("Hook: object %p calls slot %d through vtable %p we did not patch - using saved original", obj, idx, vt);
+    for (LONG i = n - 1; i >= 0; i--)
+        if (s_vts[i].orig[idx])
             return s_vts[i].orig[idx];
     return nullptr;
 }
@@ -962,12 +971,21 @@ static volatile LONG s_scDepth;
 typedef HRESULT(STDMETHODCALLTYPE* PFN_CreateSC)(IDXGIFactory*, IUnknown*, DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**);
 typedef HRESULT(STDMETHODCALLTYPE* PFN_CreateSCHwnd)(IDXGIFactory2*, IUnknown*, HWND, const DXGI_SWAP_CHAIN_DESC1*,
                                                     const DXGI_SWAP_CHAIN_FULLSCREEN_DESC*, IDXGIOutput*, IDXGISwapChain1**);
+void LogCaller(const char* what, void* ret, void* obj);
+static volatile LONG s_scLogs;
 static HRESULT STDMETHODCALLTYPE Hk_CreateSC(IDXGIFactory* f, IUnknown* dev, DXGI_SWAP_CHAIN_DESC* d, IDXGISwapChain** out)
 {
     PFN_CreateSC o = (PFN_CreateSC)OrigFor(f, 10);
+    bool log = InterlockedIncrement(&s_scLogs) <= 12;
+    if (log)
+        LogCaller("CreateSwapChain begin", __builtin_return_address(0), f);
+    if (!o)
+        return DXGI_ERROR_INVALID_CALL;
     LONG depth = InterlockedIncrement(&s_scDepth);
     HRESULT hr = o(f, dev, d, out);
     InterlockedDecrement(&s_scDepth);
+    if (log)
+        LOGI("CreateSwapChain end hr=0x%08lX sc=%p", hr, out ? *out : nullptr);
     if (depth == 1 && SUCCEEDED(hr) && out && *out)
         OnSwapChain(*out);
     return hr;
@@ -976,9 +994,16 @@ static HRESULT STDMETHODCALLTYPE Hk_CreateSCHwnd(IDXGIFactory2* f, IUnknown* dev
                                                  const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* fs, IDXGIOutput* o1, IDXGISwapChain1** out)
 {
     PFN_CreateSCHwnd o = (PFN_CreateSCHwnd)OrigFor(f, 15);
+    bool log = InterlockedIncrement(&s_scLogs) <= 12;
+    if (log)
+        LogCaller("CreateSwapChainForHwnd begin", __builtin_return_address(0), f);
+    if (!o)
+        return DXGI_ERROR_INVALID_CALL;
     LONG depth = InterlockedIncrement(&s_scDepth);
     HRESULT hr = o(f, dev, h, d, fs, o1, out);
     InterlockedDecrement(&s_scDepth);
+    if (log)
+        LOGI("CreateSwapChainForHwnd end hr=0x%08lX sc=%p", hr, out ? *out : nullptr);
     if (depth == 1 && SUCCEEDED(hr) && out && *out)
         OnSwapChain(*out);
     return hr;

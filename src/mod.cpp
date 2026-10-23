@@ -82,6 +82,7 @@ static void HookContextVtable(ID3D11DeviceContext* ctx);
 static void HookOneVtable(ID3D11DeviceContext* ctx, const char* iface);
 static void STDMETHODCALLTYPE Hk_ExecuteCommandList(ID3D11DeviceContext* ctx, ID3D11CommandList* cl, BOOL restore);
 
+static void LogUnknownCtxVtable(void** vt);
 static inline VtHooks* HooksFor(ID3D11DeviceContext* ctx)
 {
     void** vt = *(void***)ctx;
@@ -89,7 +90,10 @@ static inline VtHooks* HooksFor(ID3D11DeviceContext* ctx)
     for (LONG i = n - 1; i >= 0; i--)
         if (s_ctxHooks[i].vt == vt)
             return &s_ctxHooks[i];
-    return &s_ctxHooks[0];
+    // a vtable another layer copied from one we had patched: the originals of the most recently
+    // hooked vtable are the best match (d3d11's context vtables point at the same functions)
+    LogUnknownCtxVtable(vt);
+    return n > 0 ? &s_ctxHooks[n - 1] : &s_ctxHooks[0];
 }
 #define ORIG(h, idx, T) ((T)(h)->orig[idx])
 
@@ -2282,6 +2286,28 @@ static void STDMETHODCALLTYPE Hk_ClearState(ID3D11DeviceContext* ctx)
 }
 
 // ------------------------------------------------------------------ install
+static void LogUnknownCtxVtable(void** vt)
+{
+    static volatile LONG s_n;
+    if (InterlockedIncrement(&s_n) <= 5)
+        LOGI("Hook: context call through vtable %p we did not patch (copied by another layer)", vt);
+}
+
+void LogCaller(const char* what, void* ret, void* obj)
+{
+    HMODULE m = nullptr;
+    char path[MAX_PATH] = "?";
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCSTR)ret, &m) && m)
+        GetModuleFileNameA(m, path, MAX_PATH);
+    const char* base = path;
+    for (const char* p = path; *p; p++)
+        if (*p == '\\' || *p == '/')
+            base = p + 1;
+    LOGI("%s: called from %s+0x%llX (object %p, thread %lu)", what, base,
+         m ? (unsigned long long)((uint8_t*)ret - (uint8_t*)m) : 0ull, obj, GetCurrentThreadId());
+}
+
 static bool PatchSlot(void** vt, int idx, void* hook, void** orig)
 {
     if (vt[idx] == hook)
@@ -2328,6 +2354,15 @@ static void HookOneVtable(ID3D11DeviceContext* ctx, const char* iface)
         if (h)
         {
             h->vt = vt;
+            // publish the record before any slot points at our hooks, so a call that races the
+            // patching finds this vtable's originals (not another device's)
+            MemoryBarrier();
+            if (fresh)
+            {
+                s_ctxHookCount = n + 1;
+                fresh = false;
+            }
+            MemoryBarrier();
             PatchSlot(vt, kCtx_PSSetShader, (void*)Hk_PSSetShader, &h->orig[kCtx_PSSetShader]);
             PatchSlot(vt, kCtx_Map, (void*)Hk_Map, &h->orig[kCtx_Map]);
             PatchSlot(vt, kCtx_Unmap, (void*)Hk_Unmap, &h->orig[kCtx_Unmap]);
@@ -2459,7 +2494,13 @@ static HRESULT WINAPI Hk_GameD3D11CreateDevice(IDXGIAdapter* a, D3D_DRIVER_TYPE 
                                                D3D_FEATURE_LEVEL* outFl, ID3D11DeviceContext** ctx)
 {
     D3D_FEATURE_LEVEL want = RequestedMax(fls, n);
+    static volatile LONG s_logs;
+    bool log = InterlockedIncrement(&s_logs) <= 12;
+    if (log)
+        LogCaller("D3D11CreateDevice begin", __builtin_return_address(0), nullptr);
     HRESULT hr = o_GameD3D11CreateDevice(a, t, sw, fl, fls, n, sdk, dev, outFl, ctx);
+    if (log)
+        LOGI("D3D11CreateDevice end hr=0x%08lX dev=%p", hr, dev ? *dev : nullptr);
     if (SUCCEEDED(hr) && dev && *dev)
     {
         MaskDevice(*dev, want, outFl);
@@ -2475,7 +2516,9 @@ static HRESULT WINAPI Hk_GameD3D11CreateDeviceAndSwapChain(IDXGIAdapter* a, D3D_
                                                            ID3D11DeviceContext** ctx)
 {
     D3D_FEATURE_LEVEL want = RequestedMax(fls, n);
+    LogCaller("D3D11CreateDeviceAndSwapChain begin", __builtin_return_address(0), nullptr);
     HRESULT hr = o_GameD3D11CreateDeviceAndSwapChain(a, t, sw, fl, fls, n, sdk, sd, sc, dev, outFl, ctx);
+    LOGI("D3D11CreateDeviceAndSwapChain end hr=0x%08lX", hr);
     if (SUCCEEDED(hr) && dev && *dev)
         MaskDevice(*dev, want, outFl);
     return hr;
