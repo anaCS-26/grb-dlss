@@ -78,8 +78,7 @@ static bool HookSlot(void* obj, int idx, void* hook)
 
 // ---------------------------------------------------------------- menu state
 static volatile bool s_open;
-static HWND s_hwnd;
-static WNDPROC s_oldProc;
+static HWND s_hwnd; // window of the swap chain the game presents with
 static uint64_t s_toastUntil;
 static char s_toast[96];
 static int s_sel;
@@ -104,9 +103,30 @@ bool OverlayIsOpen()
 }
 
 // ---------------------------------------------------------------- input blocking while the menu is open
+// Every window we subclass keeps its own original procedure. (A second swap chain on a second window -
+// e.g. created by NVIDIA Smooth Motion - must not replace the game window's procedure: the game window
+// would then stop running its own message handling, including the WM_SETCURSOR that hides the cursor.)
+struct Subclassed
+{
+    HWND hwnd;
+    WNDPROC old;
+};
+static Subclassed s_sub[8];
+static volatile LONG s_subCount;
+
+static WNDPROC OldProcFor(HWND h)
+{
+    LONG n = s_subCount;
+    for (LONG i = 0; i < n; i++)
+        if (s_sub[i].hwnd == h)
+            return s_sub[i].old;
+    return nullptr;
+}
+
 static LRESULT CALLBACK MenuWndProc(HWND h, UINT m, WPARAM w, LPARAM l)
 {
-    if (s_open)
+    WNDPROC old = OldProcFor(h);
+    if (s_open && h == s_hwnd)
     {
         switch (m)
         {
@@ -125,18 +145,27 @@ static LRESULT CALLBACK MenuWndProc(HWND h, UINT m, WPARAM w, LPARAM l)
             return DefWindowProcW(h, m, w, l);
         }
     }
-    return CallWindowProcW(s_oldProc, h, m, w, l);
+    return old ? CallWindowProcW(old, h, m, w, l) : DefWindowProcW(h, m, w, l);
+}
+
+static bool OwnWindow(HWND h)
+{
+    DWORD pid = 0;
+    return h && GetWindowThreadProcessId(h, &pid) && pid == GetCurrentProcessId();
 }
 
 static void SubclassWindow(HWND h)
 {
-    if (!h || s_hwnd == h)
+    if (!h || !OwnWindow(h) || OldProcFor(h) || s_subCount >= 8)
         return;
+    LONG i = s_subCount;
+    s_sub[i].hwnd = h;
+    s_sub[i].old = (WNDPROC)GetWindowLongPtrW(h, GWLP_WNDPROC); // set before the swap so messages never miss it
+    InterlockedIncrement(&s_subCount);
     WNDPROC old = (WNDPROC)SetWindowLongPtrW(h, GWLP_WNDPROC, (LONG_PTR)MenuWndProc);
     if (old)
     {
-        s_oldProc = old;
-        s_hwnd = h;
+        s_sub[i].old = old;
         LOGI("Menu: window %p subclassed for input blocking", h);
     }
 }
@@ -200,8 +229,8 @@ static bool s_keyPrev[256];
 static uint64_t s_keyRepeat[256];
 static bool Foreground()
 {
-    HWND f = GetForegroundWindow();
-    return f && (f == s_hwnd || !s_hwnd || GetAncestor(f, GA_ROOTOWNER) == GetAncestor(s_hwnd, GA_ROOTOWNER));
+    // any window of the game process (the game window, or a window an overlay / Smooth Motion added)
+    return OwnWindow(GetForegroundWindow());
 }
 // edge-triggered, with auto-repeat when 'repeat'
 static bool Pressed(int vk, bool repeat = false)
@@ -854,11 +883,19 @@ static void OnPresent(IDXGISwapChain* sc)
     ModOnPresentEvent();
     if (!InterlockedExchange(&s_presentLogged, 1))
         LOGI("Menu: first Present on swap chain %p", sc);
-    if (!s_hwnd)
+    static IDXGISwapChain* lastSc;
+    if (sc != lastSc)
     {
+        // track the window of the swap chain the game actually presents with
         DXGI_SWAP_CHAIN_DESC d;
-        if (SUCCEEDED(sc->GetDesc(&d)))
+        if (SUCCEEDED(sc->GetDesc(&d)) && d.OutputWindow)
+        {
+            if (d.OutputWindow != s_hwnd)
+                LOGI("Menu: game presents to window %p", d.OutputWindow);
+            s_hwnd = d.OutputWindow;
             SubclassWindow(d.OutputWindow);
+        }
+        lastSc = sc;
     }
     HandleInput(g_cfg.menuKey);
     bool toast = !s_open && s_toast[0] && NowQpc() < s_toastUntil;
