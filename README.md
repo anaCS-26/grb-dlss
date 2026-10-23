@@ -11,11 +11,12 @@ The game only ships temporal AA ("Temporal Injection"). This mod replaces that T
 - Custom internal render resolution at any percentage from 25% to 100%. This works by patching the engine's dynamic-resolution ratio, so the whole renderer follows it.
 - In-game menu (**Home**) for render scale, preset and DLSS on/off. **End** switches between DLSS and the game's TAA live for comparison.
 - Most `GRB_DLSS.ini` changes apply in-game as soon as you save the file.
-- Works without other tools: it loads NVIDIA's NGX runtime from the driver. It also works alongside [OptiScaler](https://github.com/optiscaler/OptiScaler) (installed as `winmm.dll`), whose frame generation can then run on the mod's DLSS inputs.
+- Works without other tools: it loads NVIDIA's NGX runtime from the driver, plus the `nvngx_dlss.dll` you place in the game folder. It also works alongside [OptiScaler](https://github.com/optiscaler/OptiScaler) (installed as `winmm.dll`), whose frame generation can then run on the mod's DLSS inputs.
 
 ## Requirements
 
 - An NVIDIA RTX GPU and a current driver.
+- **NVIDIA's DLSS runtime, `nvngx_dlss.dll` (310.x or newer), in the game folder.** Breakpoint has no DLSS support of its own, so it ships no DLSS DLL and the NVIDIA app has no DLSS override for it. Get the DLL from NVIDIA's official [DLSS SDK](https://github.com/NVIDIA/DLSS) (`lib/Windows_x86_64/rel/nvngx_dlss.dll`).
 - Ghost Recon Breakpoint running on **DirectX 11**. Vulkan is not supported.
 - In the game's graphics settings, **Anti-Aliasing = TAA** with Temporal Injection on. The mod hooks the TAA pass, so it does nothing when TAA is off.
 
@@ -23,10 +24,10 @@ The game only ships temporal AA ("Temporal Injection"). This mod replaces that T
 
 1. Download `dinput8.dll` and `GRB_DLSS.ini` from the [latest release](../../releases/latest) (also in [`bin/`](bin/)), or build them yourself (see below).
 2. Copy both into the game folder, next to `GRB.exe`.
-3. Optional: put a recent `nvngx_dlss.dll` (310.x or newer) in the game folder for the newer presets (J–M), or use the NVIDIA app's DLSS override.
+3. Put `nvngx_dlss.dll` (310.x or newer, see Requirements) in the same folder. **This step is required**: without it DLSS can't run and the game keeps its own TAA.
 4. Start the game, set Anti-Aliasing to TAA, and press **Home** for the menu.
 
-To uninstall, delete `dinput8.dll`, `GRB_DLSS.ini` and `GRB_DLSS.log`.
+To uninstall, delete `dinput8.dll`, `GRB_DLSS.ini`, `GRB_DLSS.log` and `nvngx_dlss.dll`.
 
 > Breakpoint is an always-online game. The mod only touches rendering and does not change gameplay, but use it at your own risk, especially in PvP (Ghost War).
 
@@ -72,7 +73,7 @@ See [`config/GRB_DLSS.ini`](config/GRB_DLSS.ini). Every key is documented inline
 
 ## Credits
 
-- NVIDIA DLSS / NGX. No NVIDIA binaries are included; the runtime comes from the driver.
+- NVIDIA DLSS / NGX. No NVIDIA binaries are included: the NGX core comes from the driver, and `nvngx_dlss.dll` from NVIDIA's DLSS SDK.
 - DejaVu fonts, used for the menu.
 - OptiScaler, for compatibility testing.
 
