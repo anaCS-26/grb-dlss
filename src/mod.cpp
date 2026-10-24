@@ -1680,6 +1680,44 @@ static bool HandleTaa(ID3D11DeviceContext* ctx, VtHooks* h, CtxInfo* ce, ID3D11P
             }
             ProbeOnTaa(tc.lowResSize, tc.fullResSize, fr, haveF);
         }
+        if (g_cfg.shadowDiag)
+        {
+            // jitter sequence (first 96 frames) and the sun shadow setup from cb_g_Frame
+            static LONG64 s_diagN;
+            LONG64 dn = s_diagN++;
+            if (dn < 96)
+                LOGI("ShadowDiag jitter #%I64d: (%.5f, %.5f)", dn, tc.subPixelJitter[0], tc.subPixelJitter[1]);
+            if (cb[1] && (dn == 10 || dn == 60 || dn % 600 == 300))
+            {
+                WatchBuffer(cb[1]);
+                float f[92 * 4] = {};
+                if (ReadShadow(cb[1], ctx, cbFirst[1] * 16, f, sizeof(f), nullptr))
+                {
+                    auto V = [&](int r) { return f + r * 4; };
+                    LOGI("ShadowDiag sun: mapSize %.0f x %.0f (inv %.6f %.6f)", V(4)[0], V(4)[1], V(4)[2], V(4)[3]);
+                    for (int i = 0; i < 4; i++)
+                        LOGI("ShadowDiag cascade %d: offset (%.5f %.5f %.5f %.5f) scale (%.5f %.5f %.5f %.5f) splitBlend (%.4f %.4f %.4f %.4f)",
+                             i, V(5 + i)[0], V(5 + i)[1], V(5 + i)[2], V(5 + i)[3], V(9 + i)[0], V(9 + i)[1], V(9 + i)[2],
+                             V(9 + i)[3], V(13 + i)[0], V(13 + i)[1], V(13 + i)[2], V(13 + i)[3]);
+                    LOGI("ShadowDiag noiseScale (%.4f %.4f %.4f %.4f) nearFar (%.2f %.2f %.2f %.2f) fade (%.3f %.3f %.3f %.3f)",
+                         V(17)[0], V(17)[1], V(17)[2], V(17)[3], V(18)[0], V(18)[1], V(18)[2], V(18)[3], V(19)[0], V(19)[1],
+                         V(19)[2], V(19)[3]);
+                    LOGI("ShadowDiag rangesMax (%.4f %.4f %.4f %.4f) rangesMin (%.4f %.4f %.4f %.4f) globalFade (%.2f %.2f %.2f %.2f) "
+                         "splitUV (%.4f %.4f %.4f %.4f)",
+                         V(20)[0], V(20)[1], V(20)[2], V(20)[3], V(21)[0], V(21)[1], V(21)[2], V(21)[3], V(22)[0], V(22)[1],
+                         V(22)[2], V(22)[3], V(23)[0], V(23)[1], V(23)[2], V(23)[3]);
+                    for (int r = 0; r < 4; r++)
+                        LOGI("ShadowDiag lightProj row %d: continuous (%.6f %.6f %.6f %.6f) quantized (%.6f %.6f %.6f %.6f)", r,
+                             V(24 + r)[0], V(24 + r)[1], V(24 + r)[2], V(24 + r)[3], V(28 + r)[0], V(28 + r)[1],
+                             V(28 + r)[2], V(28 + r)[3]);
+                    const uint32_t* u = (const uint32_t*)f;
+                    LOGI("ShadowDiag fadeOutElev %.3f forcedPCF4 %u dynResRatio (%.4f %.4f %.4f %.4f) LRS (%.6f %.6f %.2f %.6f)",
+                         V(36)[0], u[82 * 4], V(90)[0], V(90)[1], V(90)[2], V(90)[3], V(37)[0], V(37)[1], V(37)[2], V(37)[3]);
+                }
+                else
+                    LOGI("ShadowDiag: cb_g_Frame not captured yet");
+            }
+        }
         if (detail || (s_dlssFrames == 0 && taaIndex < 8))
             LOGI("  TAA constants: full %.1fx%.1f low %.1fx%.1f jitter (%.4f, %.4f) isolation %u,%u,%u,%u hdr %u noMV %u",
                  tc.fullResSize[0], tc.fullResSize[1], tc.lowResSize[0], tc.lowResSize[1], tc.subPixelJitter[0],
