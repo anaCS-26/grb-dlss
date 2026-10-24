@@ -1102,6 +1102,40 @@ static void HookFactory(IUnknown* obj)
     }
 }
 
+bool ModIsGameDevice(ID3D11Device* dev);
+// Called when a render target view is created: if the resource is a swap chain back buffer of the
+// game's device, hook that swap chain's Present.
+void OverlayOnRenderTarget(ID3D11Device* dev, ID3D11Resource* res)
+{
+    static IDXGISwapChain* volatile s_seen[8];
+    static volatile LONG s_seenCount;
+    if (!ModIsGameDevice(dev))
+        return;
+    IDXGISurface* surf = nullptr;
+    if (FAILED(res->QueryInterface(__uuidof(IDXGISurface), (void**)&surf)) || !surf)
+        return;
+    IDXGISwapChain* sc = nullptr;
+    HRESULT hr = surf->GetParent(__uuidof(IDXGISwapChain), (void**)&sc);
+    surf->Release();
+    if (FAILED(hr) || !sc)
+        return;
+    LONG n = s_seenCount;
+    bool known = false;
+    for (LONG i = 0; i < n && i < 8; i++)
+        if (s_seen[i] == sc)
+            known = true;
+    if (!known)
+    {
+        if (n < 8)
+        {
+            s_seen[n] = sc;
+            s_seenCount = n + 1;
+        }
+        OnSwapChain(sc);
+    }
+    sc->Release();
+}
+
 void OverlayHookDeviceFactory(ID3D11Device* dev)
 {
     IDXGIDevice* dd = nullptr;
@@ -1158,17 +1192,6 @@ void OverlayInit()
     HMODULE dxgi = LoadLibraryW(L"dxgi.dll");
     if (!dxgi)
         return;
-    // when OptiScaler detours the dxgi exports, sit in front of it so we see what the game gets
-    ChainExport(dxgi, "CreateDXGIFactory", (void*)Hk_CreateFactory, (void**)&o_CreateFactory);
-    ChainExport(dxgi, "CreateDXGIFactory1", (void*)Hk_CreateFactory1, (void**)&o_CreateFactory1);
-    ChainExport(dxgi, "CreateDXGIFactory2", (void*)Hk_CreateFactory2, (void**)&o_CreateFactory2);
-    // and hook the factory class we get ourselves (covers the plain, un-detoured case)
-    PFN_CreateFactory cf1 = (PFN_CreateFactory)GetProcAddress(dxgi, "CreateDXGIFactory1");
-    IUnknown* f = nullptr;
-    if (cf1 && SUCCEEDED(cf1(__uuidof(IDXGIFactory1), (void**)&f)) && f)
-    {
-        HookFactory(f);
-        f->Release();
-    }
-    LOGI("Menu: swap chain creation hooks installed (menu key 0x%X)", g_cfg.menuKey);
+    // The swap chain is picked up from its back buffer (OverlayOnRenderTarget); no DXGI factory hooks.
+    LOGI("Menu: waiting for the game's swap chain (menu key 0x%X)", g_cfg.menuKey);
 }

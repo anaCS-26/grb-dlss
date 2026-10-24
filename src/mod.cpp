@@ -17,6 +17,7 @@
 // ------------------------------------------------------------------ vtable slots (verified against d3d11_1.h)
 enum
 {
+    kDev_CreateRenderTargetView = 9,
     kDev_CreatePixelShader = 15,
     kDev_CreateComputeShader = 18,
     kDev_CreateDeferredContext = 27,
@@ -1978,6 +1979,28 @@ static void STDMETHODCALLTYPE Hk_RSSetViewports(ID3D11DeviceContext* ctx, UINT n
     ORIG(h, kCtx_RSSetViewports, PFN_RSSetViewports)(ctx, n, vp);
 }
 
+// The game's swap chain is found from its back buffer when a render target view is created for it
+// (we no longer hook DXGI factories: overlays such as Ubisoft Connect's re-hook those and the two
+// hooks could end up calling each other until the game crashed at startup).
+typedef HRESULT(STDMETHODCALLTYPE* PFN_CreateRTV)(ID3D11Device*, ID3D11Resource*, const D3D11_RENDER_TARGET_VIEW_DESC*,
+                                                  ID3D11RenderTargetView**);
+static PFN_CreateRTV o_CreateRTV;
+static ID3D11Device* volatile s_gameCreatedDev; // device created by GRB.exe itself
+void OverlayOnRenderTarget(ID3D11Device* dev, ID3D11Resource* res);
+bool ModIsGameDevice(ID3D11Device* dev)
+{
+    ID3D11Device* g = s_gameCreatedDev;
+    return !g || g == dev;
+}
+static HRESULT STDMETHODCALLTYPE Hk_CreateRTV(ID3D11Device* dev, ID3D11Resource* res, const D3D11_RENDER_TARGET_VIEW_DESC* d,
+                                              ID3D11RenderTargetView** out)
+{
+    HRESULT hr = o_CreateRTV(dev, res, d, out);
+    if (SUCCEEDED(hr) && res && out && *out)
+        OverlayOnRenderTarget(dev, res);
+    return hr;
+}
+
 static HRESULT STDMETHODCALLTYPE Hk_CreateComputeShader(ID3D11Device* dev, const void* code, SIZE_T len,
                                                         ID3D11ClassLinkage* link, ID3D11ComputeShader** out)
 {
@@ -2504,7 +2527,11 @@ static HRESULT WINAPI Hk_GameD3D11CreateDevice(IDXGIAdapter* a, D3D_DRIVER_TYPE 
     if (SUCCEEDED(hr) && dev && *dev)
     {
         MaskDevice(*dev, want, outFl);
-        OverlayHookDeviceFactory(*dev);
+        HMODULE caller = nullptr;
+        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               (LPCWSTR)__builtin_return_address(0), &caller) &&
+            caller == GetModuleHandleW(nullptr))
+            s_gameCreatedDev = *dev;
     }
     return hr;
 }
@@ -2674,6 +2701,8 @@ void ModBootstrap()
     PatchSlot(s_devVt, kDev_CreatePixelShader, (void*)Hk_CreatePixelShader, (void**)&o_CreatePixelShader);
     PatchSlot(s_devVt, kDev_CreateDeferredContext, (void*)Hk_CreateDeferredContext, (void**)&o_CreateDeferredContext);
     PatchSlot(s_devVt, kDev_CreateComputeShader, (void*)Hk_CreateComputeShader, (void**)&o_CreateComputeShader);
+    if (g_cfg.menuKey)
+        PatchSlot(s_devVt, kDev_CreateRenderTargetView, (void*)Hk_CreateRTV, (void**)&o_CreateRTV);
     if (g_cfg.maskFeatureLevel)
     {
         PatchSlot(s_devVt, 37 /* GetFeatureLevel */, (void*)Hk_GetFeatureLevel, (void**)&o_GetFeatureLevel);
