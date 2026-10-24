@@ -22,7 +22,7 @@ The game only ships temporal AA ("Temporal Injection"). This mod replaces that T
 
 ## Install
 
-1. Download `dinput8.dll` and `GRB_DLSS.ini` from the [latest release](../../releases/latest) (also in [`bin/`](bin/)), or build them yourself (see below).
+1. Download `dinput8.dll` and `GRB_DLSS.ini` from the **[latest release](../../releases/latest)**. Releases are the only tested builds; don't build from the `main` branch to play, because it can contain work in progress and diagnostics.
 2. Copy both into the game folder, next to `GRB.exe`.
 3. Put `nvngx_dlss.dll` (310.x or newer, see Requirements) in the same folder. **This step is required**: without it DLSS can't run and the game keeps its own TAA.
 4. Start the game, set Anti-Aliasing to TAA, and press **Home** for the menu.
@@ -60,8 +60,11 @@ The in-game menu is drawn with D3D11 into the back buffer from a hook on the swa
 
 The DLL is cross-built from Linux with clang and lld against the mingw-w64 headers. It has no static CRT and imports only Win32 and `msvcrt.dll`.
 
+For a stable build, check out a release tag first. `main` is the development branch.
+
 ```sh
 sudo apt install clang lld mingw-w64          # Debian/Ubuntu
+git checkout v1.1                              # latest release tag
 ./build.sh                                     # -> out/dinput8.dll
 # or, with headers/libs elsewhere:
 SYSROOT=/path/to/prefix ./build.sh             # expects $SYSROOT/x86_64-w64-mingw32/include
