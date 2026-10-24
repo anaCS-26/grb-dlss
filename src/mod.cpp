@@ -104,6 +104,7 @@ static volatile LONG s_taaCount;
 static volatile DWORD s_modThread; // thread currently running our own work on the immediate context
 
 static bool s_userEnabled = true; // toggled by hotkey
+static ID3D11ShaderResourceView* volatile s_shadowMaskSrv; // sun shadow mask (debug view 6)
 static volatile bool s_fatal;     // permanent failure: leave the game's TAA alone
 static volatile LONG64 s_taaFrames, s_dlssFrames, s_fallbackFrames, s_jobFails;
 static volatile uint64_t s_lastEvalQpc, s_lastTaaQpc;
@@ -1353,6 +1354,8 @@ static void RecordResolveDraw(ID3D11DeviceContext* ctx, VtHooks* h, ID3D11PixelS
     ctx->UpdateSubresource(s_modCB_PS, 0, nullptr, psFlags, 0, 0);
     ID3D11ShaderResourceView* mine[3] = {v->srvOut, v->srvMV,
                                          (g_cfg.debugView == 5 && v->srvBias) ? v->srvBias : v->srvDepth};
+    if (g_cfg.debugView == 6 && s_shadowMaskSrv)
+        mine[2] = s_shadowMaskSrv;
     ctx->PSSetShaderResources(0, 3, mine);
     ctx->PSSetConstantBuffers(0, 1, &s_modCB_PS);
     ORIG(h, kCtx_PSSetShader, PFN_PSSetShader)(ctx, s_resolvePS, nullptr, 0);
@@ -1876,11 +1879,64 @@ static void HookDeviceContexts(ID3D11Device* dev)
     }
 }
 
+// Sun shadow mask pass (fullscreen PS: depth + cascades + cloud/long-range shadows -> shadow mask),
+// tracked for the shadow debug view.
+static ID3D11PixelShader* volatile s_shadowPS[8];
+static volatile LONG s_shadowPSCount;
+static ID3D11Resource* volatile s_shadowMaskRes;
+static bool IsShadowMaskPS(ID3D11PixelShader* ps)
+{
+    LONG n = s_shadowPSCount;
+    for (LONG i = 0; i < n && i < 8; i++)
+        if (s_shadowPS[i] == ps)
+            return true;
+    return false;
+}
+static void CaptureShadowMask(ID3D11DeviceContext* ctx)
+{
+    ID3D11RenderTargetView* rtv = nullptr;
+    ctx->OMGetRenderTargets(1, &rtv, nullptr);
+    if (!rtv)
+        return;
+    ID3D11Resource* res = nullptr;
+    rtv->GetResource(&res);
+    if (res && res != s_shadowMaskRes)
+    {
+        ID3D11Device* dev = nullptr;
+        ctx->GetDevice(&dev);
+        ID3D11ShaderResourceView* srv = nullptr;
+        if (dev && SUCCEEDED(dev->CreateShaderResourceView(res, nullptr, &srv)))
+        {
+            D3D11_TEXTURE2D_DESC td = {};
+            ((ID3D11Texture2D*)res)->GetDesc(&td);
+            LOGI("Shadow mask render target %p: %ux%u fmt %u", res, td.Width, td.Height, td.Format);
+            ID3D11ShaderResourceView* old = (ID3D11ShaderResourceView*)InterlockedExchangePointer((void* volatile*)&s_shadowMaskSrv, srv);
+            s_shadowMaskRes = res; // the SRV keeps the texture alive
+            if (old)
+                old->Release();
+        }
+        SafeRelease(dev);
+    }
+    SafeRelease(res);
+    rtv->Release();
+}
+
 static HRESULT STDMETHODCALLTYPE Hk_CreatePixelShader(ID3D11Device* dev, const void* code, SIZE_T len,
                                                       ID3D11ClassLinkage* link, ID3D11PixelShader** out)
 {
     HRESULT hr = o_CreatePixelShader(dev, code, len, link, out);
     HookDeviceContexts(dev);
+    if (SUCCEEDED(hr) && out && *out && code && len > 64 && MemFind(code, len, "t_g_LRS_TemporalClipTexture") &&
+        MemFind(code, len, "t_DepthSurface") && MemFind(code, len, "cb_g_VolumeCloudsShadow") &&
+        !MemFind(code, len, "t_BRDFLUT") && !MemFind(code, len, "t_g_FogSampler"))
+    {
+        LONG i = InterlockedIncrement(&s_shadowPSCount) - 1;
+        if (i < 8)
+        {
+            s_shadowPS[i] = *out;
+            LOGI("Sun shadow mask pixel shader detected: %p (%Iu bytes)", *out, (size_t)len);
+        }
+    }
     if (SUCCEEDED(hr) && out && *out && code)
         RegisterShaderName(*out, code, len);
     if (SUCCEEDED(hr) && out && *out && code && len > 64 && MemFind(code, len, "t_TemporalAA_ColorAccumulation") &&
@@ -1910,7 +1966,7 @@ static void STDMETHODCALLTYPE Hk_PSSetShader(ID3D11DeviceContext* ctx, ID3D11Pix
                                              ID3D11ClassInstance* const* ci, UINT n)
 {
     VtHooks* h = HooksFor(ctx);
-    if (s_taaCount)
+    if (s_taaCount || s_shadowPSCount)
         GetCtx(ctx)->ps = ps;
     ORIG(h, kCtx_PSSetShader, PFN_PSSetShader)(ctx, ps, ci, n);
 }
@@ -1946,6 +2002,12 @@ static bool TryTaa(ID3D11DeviceContext* ctx, VtHooks* h, CtxInfo* ce, const Draw
 static void STDMETHODCALLTYPE Hk_Draw(ID3D11DeviceContext* ctx, UINT vc, UINT sv)
 {
     VtHooks* h = HooksFor(ctx);
+    if (g_cfg.debugView == 6 && s_shadowPSCount && s_modThread != GetCurrentThreadId())
+    {
+        CtxInfo* ci = GetCtx(ctx);
+        if (ci && IsShadowMaskPS(ci->ps))
+            CaptureShadowMask(ctx);
+    }
     if (s_traceActive)
         TraceDraw(ctx, false);
     if (CtxInfo* ce = TaaCandidate(ctx))

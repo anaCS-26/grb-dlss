@@ -267,6 +267,12 @@ PSOut main(float4 pos : SV_Position, float2 uv : TEXCOORD0)
         float l = dot(c, float3(0.299, 0.587, 0.114)) * 0.35;
         c = float3(l, l, l) + float3(e, e * 0.6, 0.0);
     }
+    else if (DebugView == 6u)
+    {
+        // the game's sun shadow mask (render resolution): white = lit, black = in shadow
+        float sm = tDebugZ.Load(int3(lp, 0));
+        c = float3(sm, sm, sm);
+    }
     else if (DebugView == 2u)
     {
         float z = tDebugZ.Load(int3(lp, 0));
