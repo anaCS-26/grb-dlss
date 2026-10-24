@@ -1026,13 +1026,15 @@ static HRESULT STDMETHODCALLTYPE Hk_CreateSC(IDXGIFactory* f, IUnknown* dev, DXG
         LogCaller("CreateSwapChain begin", __builtin_return_address(0), f);
     if (nest > 1)
     {
-        PFN_CreateSC g = (PFN_CreateSC)GenuineFor(f, 10);
-        if (log || nest == 2)
-            LOGI("CreateSwapChain re-entered (depth %ld): calling the system implementation %p directly", nest, g);
-        if (g)
-            o = g;
-        else if (nest > 3)
-            o = nullptr; // no known way out of the loop: fail the call instead of overflowing the stack
+        // Re-entered: get out of the way completely. Jump (tail call) to the next hook, so that whoever
+        // called us sees itself as the caller of that function - overlays such as Ubisoft Connect's detect
+        // their own nested call by its return address and stop recursing only then.
+        LeaveDepth();
+        if (nest == 2)
+            LOGI("CreateSwapChain re-entered: passing through transparently");
+        if (!o)
+            return DXGI_ERROR_INVALID_CALL;
+        [[clang::musttail]] return o(f, dev, d, out);
     }
     if (!o)
     {
@@ -1059,13 +1061,12 @@ static HRESULT STDMETHODCALLTYPE Hk_CreateSCHwnd(IDXGIFactory2* f, IUnknown* dev
         LogCaller("CreateSwapChainForHwnd begin", __builtin_return_address(0), f);
     if (nest > 1)
     {
-        PFN_CreateSCHwnd g = (PFN_CreateSCHwnd)GenuineFor(f, 15);
-        if (log || nest == 2)
-            LOGI("CreateSwapChainForHwnd re-entered (depth %ld): calling the system implementation %p directly", nest, g);
-        if (g)
-            o = g;
-        else if (nest > 3)
-            o = nullptr;
+        LeaveDepth();
+        if (nest == 2)
+            LOGI("CreateSwapChainForHwnd re-entered: passing through transparently");
+        if (!o)
+            return DXGI_ERROR_INVALID_CALL;
+        [[clang::musttail]] return o(f, dev, h, d, fs, o1, out);
     }
     if (!o)
     {
