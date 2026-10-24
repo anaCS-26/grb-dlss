@@ -20,7 +20,17 @@ struct VtRec
 {
     void** vt;
     void* orig[32];
+    void* genuine[32]; // the system implementation (same module as the vtable), if we saw it
 };
+
+static HMODULE ModuleOf(const void* p)
+{
+    HMODULE m = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            (LPCWSTR)p, &m))
+        return nullptr;
+    return m;
+}
 static VtRec s_vts[24];
 static LONG s_vtCount;
 static SRWLOCK s_vtLock = SRWLOCK_INIT;
@@ -42,6 +52,37 @@ static void* OrigFor(void* obj, int idx)
         if (s_vts[i].orig[idx])
             return s_vts[i].orig[idx];
     return nullptr;
+}
+
+static void* GenuineFor(void* obj, int idx)
+{
+    void** vt = *(void***)obj;
+    LONG n = s_vtCount;
+    for (LONG i = 0; i < n; i++)
+        if (s_vts[i].vt == vt && s_vts[i].genuine[idx])
+            return s_vts[i].genuine[idx];
+    return nullptr;
+}
+
+// Per-thread nesting depth of our swap chain creation hooks. Another hook (e.g. the Ubisoft Connect
+// overlay) can end up forwarding to us while we forward to it - the call then ping-pongs until the
+// stack overflows. When we are re-entered on the same thread we call the system implementation
+// directly, which ends any such loop (a legitimately nested call reaches the same function anyway).
+static DWORD s_depthTls = TLS_OUT_OF_INDEXES;
+static LONG EnterDepth()
+{
+    if (s_depthTls == TLS_OUT_OF_INDEXES)
+        return 1;
+    LONG d = (LONG)(intptr_t)TlsGetValue(s_depthTls) + 1;
+    TlsSetValue(s_depthTls, (void*)(intptr_t)d);
+    return d;
+}
+static void LeaveDepth()
+{
+    if (s_depthTls == TLS_OUT_OF_INDEXES)
+        return;
+    LONG d = (LONG)(intptr_t)TlsGetValue(s_depthTls) - 1;
+    TlsSetValue(s_depthTls, (void*)(intptr_t)(d < 0 ? 0 : d));
 }
 
 static bool HookSlot(void* obj, int idx, void* hook)
@@ -74,6 +115,9 @@ static bool HookSlot(void* obj, int idx, void* hook)
             VirtualProtect(&vt[idx], sizeof(void*), PAGE_EXECUTE_READWRITE, &old))
         {
             r->orig[idx] = vt[idx];
+            HMODULE vm = ModuleOf(vt);
+            if (!r->genuine[idx] && vm && ModuleOf(vt[idx]) == vm)
+                r->genuine[idx] = vt[idx];
             MemoryBarrier();
             vt[idx] = hook;
             DWORD tmp;
@@ -976,14 +1020,29 @@ static volatile LONG s_scLogs;
 static HRESULT STDMETHODCALLTYPE Hk_CreateSC(IDXGIFactory* f, IUnknown* dev, DXGI_SWAP_CHAIN_DESC* d, IDXGISwapChain** out)
 {
     PFN_CreateSC o = (PFN_CreateSC)OrigFor(f, 10);
+    LONG nest = EnterDepth();
     bool log = InterlockedIncrement(&s_scLogs) <= 12;
     if (log)
         LogCaller("CreateSwapChain begin", __builtin_return_address(0), f);
+    if (nest > 1)
+    {
+        PFN_CreateSC g = (PFN_CreateSC)GenuineFor(f, 10);
+        if (log || nest == 2)
+            LOGI("CreateSwapChain re-entered (depth %ld): calling the system implementation %p directly", nest, g);
+        if (g)
+            o = g;
+        else if (nest > 3)
+            o = nullptr; // no known way out of the loop: fail the call instead of overflowing the stack
+    }
     if (!o)
+    {
+        LeaveDepth();
         return DXGI_ERROR_INVALID_CALL;
+    }
     LONG depth = InterlockedIncrement(&s_scDepth);
     HRESULT hr = o(f, dev, d, out);
     InterlockedDecrement(&s_scDepth);
+    LeaveDepth();
     if (log)
         LOGI("CreateSwapChain end hr=0x%08lX sc=%p", hr, out ? *out : nullptr);
     if (depth == 1 && SUCCEEDED(hr) && out && *out)
@@ -994,14 +1053,29 @@ static HRESULT STDMETHODCALLTYPE Hk_CreateSCHwnd(IDXGIFactory2* f, IUnknown* dev
                                                  const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* fs, IDXGIOutput* o1, IDXGISwapChain1** out)
 {
     PFN_CreateSCHwnd o = (PFN_CreateSCHwnd)OrigFor(f, 15);
+    LONG nest = EnterDepth();
     bool log = InterlockedIncrement(&s_scLogs) <= 12;
     if (log)
         LogCaller("CreateSwapChainForHwnd begin", __builtin_return_address(0), f);
+    if (nest > 1)
+    {
+        PFN_CreateSCHwnd g = (PFN_CreateSCHwnd)GenuineFor(f, 15);
+        if (log || nest == 2)
+            LOGI("CreateSwapChainForHwnd re-entered (depth %ld): calling the system implementation %p directly", nest, g);
+        if (g)
+            o = g;
+        else if (nest > 3)
+            o = nullptr;
+    }
     if (!o)
+    {
+        LeaveDepth();
         return DXGI_ERROR_INVALID_CALL;
+    }
     LONG depth = InterlockedIncrement(&s_scDepth);
     HRESULT hr = o(f, dev, h, d, fs, o1, out);
     InterlockedDecrement(&s_scDepth);
+    LeaveDepth();
     if (log)
         LOGI("CreateSwapChainForHwnd end hr=0x%08lX sc=%p", hr, out ? *out : nullptr);
     if (depth == 1 && SUCCEEDED(hr) && out && *out)
@@ -1079,6 +1153,7 @@ void OverlayInit()
         LOGI("Menu disabled (MenuKey=0)");
         return;
     }
+    s_depthTls = TlsAlloc();
     HMODULE dxgi = LoadLibraryW(L"dxgi.dll");
     if (!dxgi)
         return;
